@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jigsaw Tile Scrambler</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tile {
+      width: 100%;
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      border-radius: 6px;
+      font-weight: 900;
+      font-size: clamp(0.7rem, 3vw, 1.4rem);
+      border: 2px solid rgba(255,255,255,0.15);
+      user-select: none;
+      position: relative;
+    }
+    .tile:hover { transform: scale(1.05); box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+    .tile.selected { transform: scale(1.08); box-shadow: 0 0 0 3px #facc15, 0 4px 16px rgba(250,204,21,0.5); z-index: 10; }
+    .tile.solved { cursor: default; opacity: 0.75; }
+    .tile.solved:hover { transform: none; }
+    .tile.ghost { opacity: 0.18; }
+    #puzzle-grid {
+      display: grid;
+      gap: 4px;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    @keyframes celebrate {
+      0%,100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+    .celebrate { animation: celebrate 0.5s ease-in-out 3; }
+  </style>
+</head>
+<body class="bg-gray-900 min-h-screen text-white">
+  <div class="max-w-xl mx-auto px-4 py-6">
+
+    <!-- Header -->
+    <header class="text-center mb-6">
+      <h1 class="text-3xl font-black text-white">🧩 Tile Scrambler</h1>
+      <p class="text-gray-400 text-sm mt-1">Click two tiles to swap them · Restore the numbered order</p>
+    </header>
+
+    <!-- Controls -->
+    <section class="bg-gray-800 rounded-2xl p-4 mb-4 border border-gray-700" aria-labelledby="controls-heading">
+      <h2 id="controls-heading" class="sr-only">Game controls</h2>
+      <div class="flex flex-wrap gap-3 items-end justify-between">
+        <div>
+          <label for="difficulty" class="block text-xs font-medium text-gray-400 mb-1">Difficulty</label>
+          <select id="difficulty"
+            class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            aria-label="Select grid difficulty">
+            <option value="3">3×3 (Easy)</option>
+            <option value="4" selected>4×4 (Medium)</option>
+            <option value="5">5×5 (Hard)</option>
+          </select>
+        </div>
+        <div class="flex gap-2">
+          <button id="new-game-btn"
+            class="bg-green-600 hover:bg-green-500 text-white font-bold px-4 py-2 rounded-xl text-sm transition-colors"
+            aria-label="Start a new game">
+            New Game
+          </button>
+          <button id="shuffle-btn"
+            class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-xl text-sm transition-colors"
+            aria-label="Shuffle tiles">
+            Shuffle
+          </button>
+          <button id="ghost-btn"
+            class="bg-gray-700 hover:bg-gray-600 text-gray-300 font-bold px-4 py-2 rounded-xl text-sm transition-colors"
+            aria-pressed="false"
+            aria-label="Toggle ghost preview">
+            👁 Ghost
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stats bar -->
+    <div class="bg-gray-800 rounded-2xl px-5 py-3 mb-4 border border-gray-700 flex items-center justify-between" aria-live="polite">
+      <div class="text-center">
+        <div id="move-counter" class="text-2xl font-black text-yellow-400">0</div>
+        <div class="text-xs text-gray-500">Moves</div>
+      </div>
+      <div class="text-center">
+        <div id="timer-display" class="text-2xl font-black text-blue-400">0:00</div>
+        <div class="text-xs text-gray-500">Time</div>
+      </div>
+      <div class="text-center">
+        <div id="correct-count" class="text-2xl font-black text-green-400">0</div>
+        <div class="text-xs text-gray-500" id="correct-label">/ 0 correct</div>
+      </div>
+      <div class="text-center">
+        <div id="best-moves" class="text-2xl font-black text-purple-400">—</div>
+        <div class="text-xs text-gray-500">Best</div>
+      </div>
+    </div>
+
+    <!-- Win message -->
+    <div id="win-banner" class="hidden bg-yellow-400 text-gray-900 rounded-2xl p-4 mb-4 text-center font-black text-lg" aria-live="assertive">
+      🎉 Solved! 🎉
+    </div>
+
+    <!-- Puzzle grid -->
+    <div id="puzzle-grid" role="grid" aria-label="Puzzle grid"></div>
+
+    <!-- Ghost preview -->
+    <div id="ghost-preview" class="hidden mt-4">
+      <p class="text-xs text-gray-500 text-center mb-2">Ghost Preview (solved order)</p>
+      <div id="ghost-grid" class="max-w-32 mx-auto" style="display:grid; gap:2px;"></div>
+    </div>
+
+  </div>
+
+<script>
+const SAVE_KEY = 'tilePuzzle_v1';
+const BEST_KEY = 'tilePuzzleBest_v1';
+
+// Tile color palette — one color per number band
+const PALETTES = [
+  ['#ef4444','#f97316','#f59e0b','#84cc16','#22c55e','#14b8a6','#06b6d4','#3b82f6','#6366f1'],
+  ['#ec4899','#a855f7','#8b5cf6','#0ea5e9','#10b981','#f59e0b','#ef4444','#64748b','#94a3b8'],
+];
+
+let grid = []; // grid[i] = tile value (1-based, so solved[i] = i+1)
+let size = 4;
+let moves = 0;
+let timerSeconds = 0;
+let timerInterval = null;
+let selected = null;
+let ghostMode = false;
+let bests = {}; // size -> moves
+let gameStarted = false;
+let solved = false;
+
+function loadStorage() {
+  try {
+    const b = localStorage.getItem(BEST_KEY);
+    if (b) bests = JSON.parse(b);
+  } catch(e) {}
+}
+
+function saveBest() {
+  try { localStorage.setItem(BEST_KEY, JSON.stringify(bests)); } catch(e) {}
+}
+
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ grid, size, moves, timerSeconds }));
+  } catch(e) {}
+}
+
+function loadGame() {
+  try {
+    const s = localStorage.getItem(SAVE_KEY);
+    if (s) {
+      const d = JSON.parse(s);
+      grid = d.grid;
+      size = d.size;
+      moves = d.moves;
+      timerSeconds = d.timerSeconds || 0;
+      document.getElementById('difficulty').value = size;
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+function tileColor(val) {
+  const idx = (val - 1) % 9;
+  return PALETTES[0][idx];
+}
+
+function isSolved() {
+  return grid.every((v, i) => v === i + 1);
+}
+
+function countCorrect() {
+  return grid.filter((v, i) => v === i + 1).length;
+}
+
+function startTimer() {
+  stopTimer();
+  timerInterval = setInterval(() => {
+    timerSeconds++;
+    updateTimerDisplay();
+  }, 1000);
+}
+
+function stopTimer() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function updateTimerDisplay() {
+  const m = Math.floor(timerSeconds / 60);
+  const s = timerSeconds % 60;
+  document.getElementById('timer-display').textContent = m + ':' + String(s).padStart(2,'0');
+}
+
+function updateStats() {
+  document.getElementById('move-counter').textContent = moves;
+  document.getElementById('correct-count').textContent = countCorrect();
+  document.getElementById('correct-label').textContent = '/ ' + (size*size) + ' correct';
+  const best = bests[size];
+  document.getElementById('best-moves').textContent = best !== undefined ? best : '—';
+  updateTimerDisplay();
+}
+
+function shuffleGrid() {
+  // Fisher-Yates shuffle
+  for (let i = grid.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [grid[i], grid[j]] = [grid[j], grid[i]];
+  }
+  // Ensure it's actually scrambled (not already solved)
+  if (isSolved()) shuffleGrid();
+}
+
+function newGame() {
+  size = parseInt(document.getElementById('difficulty').value);
+  grid = Array.from({ length: size * size }, (_, i) => i + 1);
+  shuffleGrid();
+  moves = 0;
+  timerSeconds = 0;
+  selected = null;
+  solved = false;
+  gameStarted = false;
+  stopTimer();
+  document.getElementById('win-banner').classList.add('hidden');
+  renderGrid();
+  renderGhostGrid();
+  updateStats();
+  saveGame();
+}
+
+function renderGrid() {
+  const container = document.getElementById('puzzle-grid');
+  container.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+  container.innerHTML = '';
+
+  grid.forEach((val, idx) => {
+    const cell = document.createElement('div');
+    cell.className = 'tile' + (val === idx + 1 ? ' solved' : '') + (ghostMode && val !== idx + 1 ? '' : '');
+    cell.style.backgroundColor = tileColor(val);
+    cell.style.color = '#fff';
+    cell.setAttribute('role', 'gridcell');
+    cell.setAttribute('aria-label', 'Tile ' + val + (val === idx + 1 ? ' (correct position)' : ''));
+    cell.setAttribute('tabindex', solved ? '-1' : '0');
+    cell.setAttribute('data-idx', idx);
+
+    if (ghostMode && val !== idx + 1) {
+      cell.classList.add('ghost');
+    }
+
+    if (selected === idx) {
+      cell.classList.add('selected');
+    }
+
+    const num = document.createElement('span');
+    num.textContent = val;
+    cell.appendChild(num);
+
+    cell.addEventListener('click', () => handleTileClick(idx));
+    cell.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleTileClick(idx); }
+    });
+
+    container.appendChild(cell);
+  });
+}
+
+function renderGhostGrid() {
+  const ghostContainer = document.getElementById('ghost-grid');
+  ghostContainer.style.gridTemplateColumns = `repeat(${size}, 1fr)`;
+  ghostContainer.innerHTML = '';
+  for (let i = 1; i <= size * size; i++) {
+    const cell = document.createElement('div');
+    cell.style.width = '24px'; cell.style.height = '24px';
+    cell.style.backgroundColor = tileColor(i);
+    cell.style.borderRadius = '3px';
+    cell.style.display = 'flex'; cell.style.alignItems = 'center'; cell.style.justifyContent = 'center';
+    cell.style.fontSize = '0.55rem'; cell.style.fontWeight = '900'; cell.style.color = '#fff';
+    cell.textContent = i;
+    ghostContainer.appendChild(cell);
+  }
+}
+
+function handleTileClick(idx) {
+  if (solved) return;
+
+  // Start timer on first move
+  if (!gameStarted) {
+    gameStarted = true;
+    startTimer();
+  }
+
+  if (grid[idx] === idx + 1) return; // already in correct position
+
+  if (selected === null) {
+    selected = idx;
+    renderGrid();
+  } else if (selected === idx) {
+    selected = null;
+    renderGrid();
+  } else {
+    // Swap
+    [grid[selected], grid[idx]] = [grid[idx], grid[selected]];
+    moves++;
+    selected = null;
+
+    if (isSolved()) {
+      stopTimer();
+      solved = true;
+      const best = bests[size];
+      if (best === undefined || moves < best) {
+        bests[size] = moves;
+        saveBest();
+      }
+      saveBest();
+      renderGrid();
+      updateStats();
+      const banner = document.getElementById('win-banner');
+      banner.textContent = '🎉 Solved in ' + moves + ' moves and ' + formatTime(timerSeconds) + '! 🎉';
+      banner.classList.remove('hidden');
+      banner.classList.add('celebrate');
+      saveGame();
+      return;
+    }
+
+    renderGrid();
+    updateStats();
+    saveGame();
+  }
+}
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  return m + ':' + String(s % 60).padStart(2,'0');
+}
+
+document.getElementById('new-game-btn').addEventListener('click', newGame);
+document.getElementById('shuffle-btn').addEventListener('click', () => {
+  if (solved) return;
+  shuffleGrid();
+  moves = 0;
+  timerSeconds = 0;
+  selected = null;
+  gameStarted = false;
+  stopTimer();
+  document.getElementById('win-banner').classList.add('hidden');
+  renderGrid();
+  updateStats();
+  saveGame();
+});
+
+document.getElementById('ghost-btn').addEventListener('click', () => {
+  ghostMode = !ghostMode;
+  const btn = document.getElementById('ghost-btn');
+  btn.setAttribute('aria-pressed', ghostMode ? 'true' : 'false');
+  btn.className = 'font-bold px-4 py-2 rounded-xl text-sm transition-colors ' +
+    (ghostMode ? 'bg-yellow-500 text-gray-900' : 'bg-gray-700 hover:bg-gray-600 text-gray-300');
+  document.getElementById('ghost-preview').classList.toggle('hidden', !ghostMode);
+  renderGrid();
+});
+
+document.getElementById('difficulty').addEventListener('change', newGame);
+
+// Init
+loadStorage();
+const saved = loadGame();
+if (saved) {
+  renderGrid();
+  renderGhostGrid();
+  updateStats();
+  if (!isSolved() && timerSeconds > 0) {
+    // Don't auto-start timer on load, user must make a move
+  }
+} else {
+  newGame();
+}
+</script>
+</body>
+</html>
